@@ -1,0 +1,927 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>ProofOfConcept: IYA</title>
+
+  <!--
+    ---Quick-start---
+    - Save document.
+    - Open in any modern browser (Chrome/Firefox/Edge).
+    - Use the toolbar to add tables, draw lines, add text, save/load, export PDF.
+  -->
+
+  <!-- Requirements bits (fixed versions as of Aug 2025) -->
+  <script src="https://cdn.jsdelivr.net/npm/konva@9.3.14/konva.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
+
+  <style>
+    /* Colour recipe (Sanzo Wada vibes) */
+    :root{
+      --cinnamon:#D2A679; --slate:#708090; --sienna:#E97451; --turquoise:#00C49A;
+      --bg:white; --ink:#000;
+    }
+
+    html,body{ margin:0; padding:0; }
+    body{
+      font-family:Arial, Helvetica, sans-serif;
+      color:var(--ink); background:var(--bg);
+      display:flex; flex-direction:column; align-items:center;
+    }
+
+    .grayscale{ filter:grayscale(100%); }
+
+    #toolbar{
+      width:100%;
+      background:var(--slate);
+      padding:10px;
+      display:flex; flex-wrap:wrap; justify-content:space-around; gap:6px 8px;
+    }
+    button{
+      background:var(--turquoise); color:#fff; border:none;
+      padding:8px 16px; border-radius:4px; cursor:pointer;
+    }
+    button:hover{ background:var(--sienna); }
+    button:disabled{ opacity:.6; cursor:not-allowed; }
+
+    #canvasWrapper{ display:flex; align-items:flex-start; gap:10px; margin:20px; }
+
+    #navControls{ display:flex; flex-direction:column; gap:5px; }
+    #navControls button{ width:32px; height:32px; padding:0; font-size:16px; }
+
+    #container{
+      border:1px solid var(--cinnamon);
+      background:#f9f9f9;
+      /* scrolling panning not needed; stage is draggable */
+      overflow:hidden;
+    }
+
+    #tableDetails{
+      width:80%; max-width:800px;
+      margin:20px; padding:10px;
+      border:1px solid var(--slate); background:#fff; border-radius:4px;
+    }
+
+    /* Simple modal shell */
+    .modal{
+      display:none; position:fixed; inset:0; z-index:3;
+      background:rgba(0,0,0,.4);
+      align-items:center; justify-content:center;
+    }
+    .modal-content{
+      background:#fff; border:1px solid var(--slate); border-radius:8px;
+      width:80%; max-width:420px; max-height:80vh; overflow:auto;
+      padding:20px;
+    }
+
+    input,select,textarea{ width:100%; padding:8px; margin:10px 0; box-sizing:border-box; }
+
+    /* Mobile tweaks */
+    @media (max-width: 768px){
+      #toolbar{ flex-direction:column; align-items:center; }
+      #canvasWrapper{ flex-direction:column; align-items:center; }
+      #navControls{ flex-direction:row; }
+      #container{ width:100%; }
+    }
+
+    /* Focus outline for a11y */
+    button:focus, input:focus, select:focus, textarea:focus{ outline:2px solid var(--turquoise); }
+  </style>
+</head>
+<body>
+
+  <!-- Main controls -->
+  <div id="toolbar" role="toolbar" aria-label="App toolbar">
+    <button onclick="showSelectPreMade()">Select Pre‑Made</button>
+    <button id="addRectBtn" disabled onclick="addTable('rect')">Add Rect Table</button>
+    <button id="addCircleBtn" disabled onclick="addTable('circle')">Add Circle Table</button>
+    <button id="addLineBtn" disabled onclick="addLine()">Add Line</button>
+    <button id="addTextBtn" disabled onclick="addTextLabel()">Add Text</button>
+    <button id="addGuestBtn" disabled onclick="addGuestToSelected()">Add Guest</button>
+    <button id="deleteBtn" disabled onclick="deleteSelected()">Delete Selected</button>
+    <button id="saveBtn" disabled onclick="savePlan()">Save</button>
+    <button onclick="showLoadModal()">Load</button>
+    <button id="exportBtn" disabled onclick="exportPDF()">Export PDF</button>
+    <button onclick="showAboutModal()">About the App</button>
+    <button onclick="toggleGrayscale()">Toggle B&W</button>
+  </div>
+
+  <!-- Canvas + nav -->
+  <div id="canvasWrapper">
+    <div id="navControls" aria-label="Zoom controls">
+      <button onclick="zoomIn()" aria-label="Zoom In">+</button>
+      <button onclick="zoomOut()" aria-label="Zoom Out">−</button>
+      <button onclick="centerView()" aria-label="Center View">⊙</button>
+    </div>
+    <div id="container" role="region" aria-label="Floor plan canvas"></div>
+  </div>
+
+  <!-- Live table summary -->
+  <div id="tableDetails" aria-live="polite"></div>
+
+  <!-- Premade plan chooser -->
+  <div id="preMadeModal" class="modal" aria-modal="true">
+    <div class="modal-content">
+      <h2>Select Pre‑Made Plan</h2>
+      <select id="preMadeSelect">
+        <option value="small">Small Hall (800×600)</option>
+        <option value="ballroom">Ballroom (1200×800)</option>
+        <option value="conference">Conference Room (1000×700)</option>
+      </select>
+
+      <label for="venueNamePre">Venue Name:</label>
+      <input id="venueNamePre" type="text" placeholder="Optional"/>
+
+      <label for="locationPre">Location:</label>
+      <input id="locationPre" type="text" placeholder="Optional"/>
+
+      <label for="capacityPre">Total Capacity:</label>
+      <input id="capacityPre" type="number" min="0" placeholder="0" />
+
+      <div style="display:flex; gap:10px; margin-top:10px;">
+        <button onclick="createPreMadePlan()">Select</button>
+        <button onclick="closeModal('preMadeModal')">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Table maker -->
+  <div id="tableModal" class="modal" aria-modal="true">
+    <div class="modal-content">
+      <h2>Add Table</h2>
+
+      <label for="tableWidth">Width/Diameter:</label>
+      <input id="tableWidth" type="number" min="10" value="100" required/>
+
+      <label for="tableHeight">Height (for rectangle):</label>
+      <input id="tableHeight" type="number" min="10" value="50" required/>
+
+      <label for="tableCapacity">Capacity:</label>
+      <input id="tableCapacity" type="number" min="1" value="8" required/>
+
+      <div style="display:flex; gap:10px; margin-top:10px;">
+        <button id="confirmTable">Add</button>
+        <button onclick="closeModal('tableModal')">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Text label modal -->
+  <div id="textModal" class="modal" aria-modal="true">
+    <div class="modal-content">
+      <h2>Add Text Label</h2>
+
+      <label for="textContent">Text:</label>
+      <input id="textContent" type="text" required/>
+
+      <label for="textFont">Font:</label>
+      <select id="textFont">
+        <option value="Arial">Arial</option>
+        <option value="Times New Roman">Times New Roman</option>
+        <option value="Courier">Courier</option>
+      </select>
+
+      <div style="display:flex; gap:10px; margin-top:10px;">
+        <button onclick="confirmAddText()">Add</button>
+        <button onclick="closeModal('textModal')">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Guest modal -->
+  <div id="guestModal" class="modal" aria-modal="true">
+    <div class="modal-content">
+      <h2>Add Guest</h2>
+
+      <label for="guestName">Guest Name:</label>
+      <input id="guestName" type="text" required/>
+
+      <div style="display:flex; gap:10px; margin-top:10px;">
+        <button onclick="confirmAddGuest()">Add</button>
+        <button onclick="closeModal('guestModal')">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Load/save modal -->
+  <div id="loadModal" class="modal" aria-modal="true">
+    <div class="modal-content">
+      <h2>Load Plan</h2>
+
+      <label for="loadSelect">Your saved plans:</label>
+      <select id="loadSelect"></select>
+
+      <div style="display:flex; gap:10px; margin-top:10px;">
+        <button onclick="loadPlan()">Load</button>
+        <button onclick="deleteSavedPlan()">Delete Selected</button>
+      </div>
+
+      <hr style="margin:16px 0;">
+
+      <p><strong>Or</strong> paste JSON (advanced):</p>
+      <textarea id="loadJson" rows="5" placeholder='{"venue":{...}}'></textarea>
+      <div style="display:flex; gap:10px; margin-top:10px;">
+        <button onclick="loadFromJson()">Load from JSON</button>
+        <button onclick="closeModal('loadModal')">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- About modal -->
+  <div id="aboutModal" class="modal" aria-modal="true">
+    <div class="modal-content">
+      <h2>About the App</h2>
+      <p>
+        Everything runs in your browser. Saving uses localStorage.
+        This POC guided the 2026 product roadmap; the final app aims to deliver
+        precise venue floor‑plans with seating management.
+      </p>
+      <h3>Creators</h3>
+      <ul>
+        <li>Adeleke — Founder</li>
+        <li>Abisade — Frontend Engineer</li>
+      </ul>
+      <div style="display:flex; gap:10px; margin-top:10px;">
+        <button onclick="closeModal('aboutModal')">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // ===== Globals (kept tidy-ish) =====
+    let stage, layer, lineLayer, tr;
+    let selected = null;
+    let tooltip;
+    let previewLine = null;
+    let linePoints = [];
+    let lineStatusLabel = null; // (renamed from drawingStatus)
+    let drawingLine = false;
+
+    let venueDetails = {};
+    let tables = [];
+    let lines = [];
+    let textLabels = []; // (renamed from texts)
+
+    let planInitialized = false;
+
+    const MIN_SCALE = 0.5;
+    const MAX_SCALE = 3;
+
+    // Plan presets — these should be sensible canvases for laptop screens - more research required.
+    const preMadePlans = {
+      small:      { width: 800,  height: 600 },
+      ballroom:   { width: 1200, height: 800 },
+      conference: { width: 1000, height: 700 }
+    };
+
+    // Nice colours
+    const cinnamon = '#D2A679';
+    const slate    = '#708090';
+    const sienna   = '#E97451';
+    const turquoise= '#00C49A';
+    const textColor= '#000';
+
+    // ===== helpers =====
+    const closeModal = (id) => document.getElementById(id).style.display = 'none';
+
+    function toggleGrayscale(){ document.body.classList.toggle('grayscale'); }
+
+    function updateToolbarState(){
+      const s = !!planInitialized;
+      document.getElementById('addRectBtn').disabled   = !s;
+      document.getElementById('addCircleBtn').disabled = !s;
+      document.getElementById('addLineBtn').disabled   = !s;
+      document.getElementById('addTextBtn').disabled   = !s;
+      document.getElementById('saveBtn').disabled      = !s;
+      document.getElementById('exportBtn').disabled    = !s;
+
+      const canGuest = s && !!selected && !!selected.attrs && selected.attrs.isTable;
+      document.getElementById('addGuestBtn').disabled  = !canGuest;
+      document.getElementById('deleteBtn').disabled    = !selected;
+    }
+
+    function updateTableDetails(){
+      const box = document.getElementById('tableDetails');
+      box.innerHTML = '';
+      tables.forEach((g, i) => {
+        const kind = g.findOne('Rect') ? 'Rect' : 'Circle';
+        const p = document.createElement('p');
+        p.textContent = `Table ${i+1} (${kind}, Capacity: ${g.attrs.capacity}): Guests - ${g.attrs.guests.join(', ') || 'None'}`;
+        box.appendChild(p);
+      });
+    }
+
+    // Centralised click selection so we can keep drawing mode logic clean
+    function handleStageClick(e){
+      if (drawingLine) return; // ignore clicks while drawing
+      if (e.target === stage){
+        tr.nodes([]);
+        selected = null;
+        updateToolbarState();
+        return;
+      }
+      const node = e.target;
+      if (node.attrs.isLine || node.attrs.isText){
+        tr.nodes([node]);
+        selected = node;
+      } else if (node.getParent() && node.getParent().attrs.isTable){
+        tr.nodes([node.getParent()]);
+        selected = node.getParent();
+      }
+      updateToolbarState();
+      if (selected && selected.attrs.isTable) updateTableDetails();
+    }
+
+    // ===== Premade selection =====
+    function showSelectPreMade(){
+      document.getElementById('preMadeModal').style.display = 'flex';
+    }
+
+    function showAboutModal(){
+      document.getElementById('aboutModal').style.display = 'flex';
+    }
+
+    function createPreMadePlan(){
+      const chosen = document.getElementById('preMadeSelect').value;
+      const { width, height } = preMadePlans[chosen];
+
+      venueDetails = {
+        name: (document.getElementById('venueNamePre').value || 'Untitled').trim(),
+        location: (document.getElementById('locationPre').value || 'Unknown').trim(),
+        capacity: parseInt(document.getElementById('capacityPre').value) || 0
+      };
+
+      initCanvas(width, height);
+      closeModal('preMadeModal');
+    }
+
+    // ===== Canvas, layers, zoom&pan =====
+    function initCanvas(width, height){
+      if (stage) stage.destroy();
+
+      const container = document.getElementById('container');
+      container.style.width  = width + 'px';
+      container.style.height = height + 'px';
+
+      stage = new Konva.Stage({ container:'container', width, height, draggable:true });
+
+      // We keep lines under tables by using a dedicated layer ordered first.
+      lineLayer = new Konva.Layer();
+      layer     = new Konva.Layer();
+
+      stage.add(lineLayer);
+      stage.add(layer);
+
+      tr = new Konva.Transformer();
+      layer.add(tr);
+
+      // Label the canvas with venue name (nice touch - idea by bisade)
+      const label = new Konva.Text({
+        id:'canvasLabel',
+        text:`${venueDetails.name} Floor Plan`,
+        fontSize:14, fill:slate, x:10, y:10
+      });
+      layer.add(label);
+      layer.draw();
+
+      // Tooltip (shows guests on hover)
+      tooltip = new Konva.Label({ opacity:.75, visible:false, listening:false });
+      tooltip.add(new Konva.Tag({ fill:'#000', pointerDirection:'down' }));
+      tooltip.add(new Konva.Text({ text:'', padding:5, fill:'#fff' }));
+      layer.add(tooltip);
+
+      // Mouse wheel zoom
+      stage.on('wheel', (e)=>{
+        e.evt.preventDefault();
+        zoomAtPoint(e.evt.layerX, e.evt.layerY, e.evt.deltaY > 0 ? 0.8 : 1.2);
+      });
+
+      // Keyboard zoom (+/-)
+      document.addEventListener('keydown', (e)=>{
+        if (e.key==='+' || e.key==='=') zoomAtPoint(stage.width()/2, stage.height()/2, 1.2);
+        else if (e.key==='-')           zoomAtPoint(stage.width()/2, stage.height()/2, 0.8);
+      });
+
+      // Centralised selection
+      stage.on('click', handleStageClick);
+
+      // Keyboard move/delete + ESC during draw
+      document.addEventListener('keydown', (e)=>{
+        if (drawingLine && e.key==='Escape'){ cancelDrawing(); return; }
+        if (!selected) return;
+
+        const step = e.shiftKey ? 10 : 5;
+        switch (e.key){
+          case 'ArrowLeft':  selected.x(selected.x() - step); break;
+          case 'ArrowRight': selected.x(selected.x() + step); break;
+          case 'ArrowUp':    selected.y(selected.y() - step); break;
+          case 'ArrowDown':  selected.y(selected.y() + step); break;
+          case 'Delete':     deleteSelected(); break;
+        }
+        layer.batchDraw();
+      });
+
+      // Very rough "too many nodes" ping - unlikey to be triggered in POC
+      stage.on('contentChange', ()=>{
+        const total = tables.length + lines.length + textLabels.length;
+        if (total > 50) alert('Heads up: lots of items may cause lag.');
+      });
+
+      planInitialized = true;
+      tables = []; lines = []; textLabels = [];
+      selected = null;
+      updateToolbarState();
+      updateTableDetails();
+    }
+
+    function zoomAtPoint(x, y, factor){
+      const oldScale = stage.scaleX() || 1;
+      const newScale = Math.min(MAX_SCALE, Math.max(MIN_SCALE, oldScale * factor));
+      if (newScale === oldScale) return;
+
+      const mousePoint = { x:(x - stage.x())/oldScale, y:(y - stage.y())/oldScale };
+      stage.scale({ x:newScale, y:newScale });
+      stage.position({ x: x - mousePoint.x * newScale, y: y - mousePoint.y * newScale });
+      layer.batchDraw();
+    }
+
+    function zoomIn(){  zoomAtPoint(stage.width()/2, stage.height()/2, 1.2); }
+    function zoomOut(){ zoomAtPoint(stage.width()/2, stage.height()/2, 0.8); }
+
+    function centerView(){
+      const bounds = layer.getClientRect({ skipTransform:true });
+      if (!bounds.width || !bounds.height) return;
+      const pad = .1;
+      const scaleX = stage.width()  / (bounds.width  * (1 + pad*2));
+      const scaleY = stage.height() / (bounds.height * (1 + pad*2));
+      const s = Math.min(scaleX, scaleY, MAX_SCALE);
+      stage.scale({ x:s, y:s });
+      stage.position({ x: -bounds.x * s + stage.width() * pad, y: -bounds.y * s + stage.height() * pad });
+      layer.batchDraw();
+    }
+
+    // ===== Table creation =====
+    let currentShape; // 'rect' or 'circle'
+
+    function addTable(shape){
+      if (!planInitialized) return alert('Select a pre‑made plan first.');
+      currentShape = shape;
+      // Show/Hide height only for rectangles
+      const hInput = document.getElementById('tableHeight');
+      hInput.style.display = (shape === 'rect') ? 'block' : 'none';
+      document.getElementById('tableModal').style.display = 'flex';
+      document.getElementById('confirmTable').onclick = confirmAddTable;
+    }
+
+    function confirmAddTable(){
+      const w = parseInt(document.getElementById('tableWidth').value);
+      const h = (currentShape === 'rect') ? parseInt(document.getElementById('tableHeight').value) : w;
+      const cap = parseInt(document.getElementById('tableCapacity').value);
+      if (isNaN(w) || w < 10 || (currentShape === 'rect' && (isNaN(h) || h < 10)) || isNaN(cap) || cap < 1){
+        alert('Please enter valid numbers.');
+        return;
+      }
+
+      const group = new Konva.Group({ x:stage.width()/2, y:stage.height()/2, draggable:true, isTable:true, guests:[], capacity:cap });
+
+      let shapeNode;
+      if (currentShape === 'rect'){
+        shapeNode = new Konva.Rect({ width:w, height:h, fill:cinnamon, stroke:slate, strokeWidth:2 });
+      } else {
+        shapeNode = new Konva.Circle({ radius:w/2, fill:cinnamon, stroke:slate, strokeWidth:2 });
+      }
+
+      group.add(shapeNode);
+      layer.add(group); layer.draw();
+      tables.push(group);
+
+      group.attrs['aria-label'] = `${currentShape} table with capacity ${cap} at position ${group.x()},${group.y()}`;
+
+      group.on('dragmove', Konva.Util.throttle(()=>layer.batchDraw(), 50));
+      group.on('mouseover', (evt)=>{
+        const gs = group.attrs.guests;
+        tooltip.getText().text(`Guests: ${gs.length}/${group.attrs.capacity}\n${gs.join('\n') || 'None'}`);
+        tooltip.position({ x:evt.evt.layerX + 10, y:evt.evt.layerY + 10 });
+        tooltip.show(); layer.batchDraw();
+      });
+      group.on('mouseleave', ()=>{ tooltip.hide(); layer.batchDraw(); });
+
+      closeModal('tableModal');
+    }
+
+    // Tiny stick person icon; purely decorative once a table has guests - need a more professional icon
+    function createPersonIcon(){
+      const icon = new Konva.Group({ scale:{x:.5,y:.5}, opacity:.7 });
+      icon.add(new Konva.Circle({ radius:5, fill:slate, x:0, y:0 }));              // head
+      icon.add(new Konva.Line({ points:[0,5,0,15], stroke:slate, strokeWidth:2 })); // body
+      icon.add(new Konva.Line({ points:[-5,10,5,10], stroke:slate, strokeWidth:2 })); // arms
+      icon.add(new Konva.Line({ points:[-5,20,0,15,5,20], stroke:slate, strokeWidth:2 })); // legs
+      return icon;
+    }
+
+    // ===== Guest flow =====
+    function addGuestToSelected(){
+      if (!selected || !selected.attrs.isTable || selected.attrs.guests.length >= selected.attrs.capacity){
+        alert('Pick a table (with spare seats).');
+        return;
+      }
+      document.getElementById('guestModal').style.display = 'flex';
+    }
+
+    function confirmAddGuest(){
+      const name = (document.getElementById('guestName').value || '').trim();
+      if (!name){ alert('Enter a guest name.'); return; }
+
+      if (selected){
+        selected.attrs.guests.push(name);
+
+        // First guest: drop the little person icon onto table so it's visually "occupied"
+        if (selected.attrs.guests.length === 1){
+          const icon = createPersonIcon();
+          const shape = selected.findOne('Rect') || selected.findOne('Circle');
+          const isRect = shape instanceof Konva.Rect;
+          icon.position({ x:isRect ? shape.width() - 20 : shape.radius() - 10, y:isRect ? 10 : -shape.radius() + 10 });
+          selected.add(icon);
+        }
+
+        layer.draw();
+        updateTableDetails();
+
+        // a11y hint
+        selected.attrs['aria-label'] = `${(selected.findOne('Rect')?'rect':'circle')} table with ${selected.attrs.guests.length} guests at position ${selected.x()},${selected.y()}`;
+      }
+
+      closeModal('guestModal');
+      document.getElementById('guestName').value = '';
+    }
+
+    // ===== Line drawing (polyline; click to add points, dbl‑click to finish) =====
+    function addLine(){
+      if (!planInitialized) return alert('Select a pre‑made plan first.');
+      drawingLine = true;
+      stage.draggable(false);  // freeze panning while we draw
+      linePoints = [];
+      stage.container().style.cursor = 'crosshair';
+
+      // status text (renamed from drawingStatus)
+      lineStatusLabel = new Konva.Text({
+        text:'Drawing line… Click to add points, double‑click to finish, ESC to cancel',
+        fontSize:12, fill:slate, x:10, y:30
+      });
+      layer.add(lineStatusLabel);
+      layer.draw();
+
+      stage.on('click', addLinePoint);
+      stage.on('dblclick', finishPolyline);
+      stage.on('mousemove', updatePreviewLine);
+    }
+
+    function addLinePoint(e){
+      linePoints.push(e.evt.layerX, e.evt.layerY);
+
+      if (linePoints.length >= 4){
+        const seg = new Konva.Line({
+          points: linePoints.slice(-4),
+          stroke:slate, strokeWidth:2,
+          draggable:true, isLine:true
+        });
+        // IMPORTANT: put line on lineLayer so it stays under tables!!!!!!
+        lineLayer.add(seg);
+        lines.push(seg);
+        seg.on('dragmove', Konva.Util.throttle(()=>layer.batchDraw(), 50));
+        lineLayer.draw();
+      }
+    }
+
+    function updatePreviewLine(e){
+      if (!linePoints.length || linePoints.length % 2 === 0) return;
+      if (previewLine) previewLine.destroy();
+
+      previewLine = new Konva.Line({
+        points:[ linePoints[linePoints.length-2], linePoints[linePoints.length-1], e.evt.layerX, e.evt.layerY ],
+        stroke:slate, strokeWidth:1, dash:[5,5]
+      });
+      lineLayer.add(previewLine);
+      lineLayer.batchDraw();
+    }
+
+    function finishPolyline(){
+      if (previewLine) previewLine.destroy();
+      if (lineStatusLabel) lineStatusLabel.destroy();
+
+      stage.off('click', addLinePoint);
+      stage.off('dblclick', finishPolyline);
+      stage.off('mousemove', updatePreviewLine);
+
+      stage.container().style.cursor = 'default';
+      drawingLine = false;
+      linePoints = [];
+
+      lineLayer.draw();
+      layer.draw();
+      stage.draggable(true);
+    }
+
+    function cancelDrawing(){
+      if (previewLine) previewLine.destroy();
+      if (lineStatusLabel) lineStatusLabel.destroy();
+
+      stage.off('click', addLinePoint);
+      stage.off('mousemove');
+      stage.off('dblclick', finishPolyline);
+
+      stage.container().style.cursor = 'default';
+      drawingLine = false;
+      linePoints = [];
+      layer.draw(); lineLayer.draw();
+      stage.draggable(true);
+    }
+
+    // ===== Text labels =====
+    function addTextLabel(){
+      if (!planInitialized) return alert('Select a pre‑made plan first.');
+      document.getElementById('textModal').style.display = 'flex';
+    }
+
+    function confirmAddText(){
+      const content = (document.getElementById('textContent').value || '').trim();
+      const font = document.getElementById('textFont').value;
+      if (!content){ alert('Enter some text.'); return; }
+
+      const t = new Konva.Text({
+        text:content, fontSize:16, fontFamily:font, fill:textColor,
+        x:stage.width()/2, y:stage.height()/2,
+        draggable:true, isText:true
+      });
+      layer.add(t); layer.draw();
+      textLabels.push(t);
+      t.attrs['aria-label'] = `Text label: ${content}`;
+      t.on('dragmove', Konva.Util.throttle(()=>layer.batchDraw(), 50));
+      closeModal('textModal');
+    }
+
+    // ===== Delete selection =====
+    function deleteSelected(){
+      if (!selected) return;
+      if (selected.attrs.isTable) tables = tables.filter(g => g !== selected);
+      else if (selected.attrs.isLine) lines = lines.filter(l => l !== selected);
+      else if (selected.attrs.isText) textLabels = textLabels.filter(tx => tx !== selected);
+
+      selected.destroy();
+      tr.nodes([]);
+      selected = null;
+      layer.draw(); lineLayer.draw();
+      updateToolbarState();
+      updateTableDetails();
+    }
+
+    // ===== Save/Load (localStorage) =====
+    function savePlan(){
+      if (!planInitialized) return alert('Select a pre‑made plan first.');
+
+      const data = {
+        venue: venueDetails,
+        width: stage.width(),
+        height: stage.height(),
+        tables: tables.map(g => {
+          const rect = g.findOne('Rect');
+          const circ = g.findOne('Circle');
+          return {
+            x: g.x(), y:g.y(),
+            shape: rect ? 'rect' : 'circle',
+            width: rect ? rect.width() : undefined,
+            height: rect ? rect.height() : undefined,
+            radius: circ ? circ.radius() : undefined,
+            guests: g.attrs.guests,
+            capacity: g.attrs.capacity
+          };
+        }),
+        lines: lines.map(l => ({ points: l.points(), x:l.x(), y:l.y() })),
+        texts: textLabels.map(tx => ({ text:tx.text(), fontFamily:tx.fontFamily(), x:tx.x(), y:tx.y() }))
+      };
+
+      const name = prompt('Save as:') || 'Untitled';
+      const payload = { name, data: JSON.stringify(data) };
+
+      const saved = JSON.parse(localStorage.getItem('eventPlans') || '[]');
+      const idx = saved.findIndex(s => s.name === name);
+      if (idx !== -1){
+        if (!confirm('Name exists. Overwrite?')) return;
+        saved[idx] = payload;
+      } else saved.push(payload);
+
+      localStorage.setItem('eventPlans', JSON.stringify(saved));
+
+      venueDetails.name = name;
+      const label = stage.findOne('#canvasLabel');
+      if (label) label.text(`${venueDetails.name} Floor Plan`);
+      layer.draw();
+
+      alert('Saved!');
+    }
+
+    function showLoadModal(){
+      const select = document.getElementById('loadSelect');
+      select.innerHTML = '';
+      const saved = JSON.parse(localStorage.getItem('eventPlans') || '[]');
+      saved.forEach((plan, i)=>{
+        const opt = document.createElement('option');
+        opt.value = i; opt.text = plan.name; select.add(opt);
+      });
+      document.getElementById('loadModal').style.display = 'flex';
+    }
+
+    function deleteSavedPlan(){
+      const sel = document.getElementById('loadSelect');
+      if (sel.value === '') return alert('Select a plan to delete.');
+
+      const saved = JSON.parse(localStorage.getItem('eventPlans') || '[]');
+      const name = saved[sel.value].name;
+      if (!confirm(`Delete "${name}"? This is permanent.`)) return;
+
+      saved.splice(sel.value, 1);
+      localStorage.setItem('eventPlans', JSON.stringify(saved));
+      alert('Deleted!');
+      closeModal('loadModal');
+      showLoadModal();
+    }
+
+    function loadPlan(){
+      const sel = document.getElementById('loadSelect');
+      const saved = JSON.parse(localStorage.getItem('eventPlans') || '[]');
+      if (!saved.length){ alert('No saved plans.'); return; }
+      const data = JSON.parse(saved[sel.value].data);
+
+      venueDetails = data.venue;
+      initCanvas(data.width, data.height);
+
+      // tables
+      tables = [];
+      data.tables.forEach(t => {
+        const group = new Konva.Group({ x:t.x, y:t.y, draggable:true, isTable:true, guests:t.guests || [], capacity:t.capacity });
+        let shape;
+        if (t.shape === 'rect'){
+          shape = new Konva.Rect({ width:t.width, height:t.height, fill:cinnamon, stroke:slate, strokeWidth:2 });
+        } else {
+          shape = new Konva.Circle({ radius:t.radius, fill:cinnamon, stroke:slate, strokeWidth:2 });
+        }
+        group.add(shape);
+
+        if ((t.guests || []).length > 0){
+          const icon = createPersonIcon();
+          const isRect = (t.shape === 'rect');
+          icon.position({ x:isRect ? t.width - 20 : t.radius - 10, y:isRect ? 10 : -t.radius + 10 });
+          group.add(icon);
+        }
+
+        layer.add(group);
+        tables.push(group);
+
+        group.on('dragmove', Konva.Util.throttle(()=>layer.batchDraw(), 50));
+        group.on('mouseover', (e)=>{
+          const gs = group.attrs.guests;
+          tooltip.getText().text(`Guests: ${gs.length}/${group.attrs.capacity}\n${gs.join('\n') || 'None'}`);
+          tooltip.position({ x:e.evt.layerX + 10, y:e.evt.layerY + 10 });
+          tooltip.show(); layer.batchDraw();
+        });
+        group.on('mouseleave', ()=>{ tooltip.hide(); layer.batchDraw(); });
+      });
+
+      // lines (ensure they go to lineLayer so they stay under tables)
+      lines = [];
+      data.lines.forEach(l => {
+        const line = new Konva.Line({ points:l.points, stroke:slate, strokeWidth:2, draggable:true, isLine:true, x:l.x, y:l.y });
+        lineLayer.add(line);
+        lines.push(line);
+        line.on('dragmove', Konva.Util.throttle(()=>layer.batchDraw(), 50));
+      });
+
+      // texts
+      textLabels = [];
+      data.texts.forEach(tx => {
+        const text = new Konva.Text({ text:tx.text, fontSize:16, fontFamily:tx.fontFamily, fill:textColor, x:tx.x, y:tx.y, draggable:true, isText:true });
+        layer.add(text);
+        textLabels.push(text);
+        text.on('dragmove', Konva.Util.throttle(()=>layer.batchDraw(), 50));
+      });
+
+      layer.draw(); lineLayer.draw();
+      closeModal('loadModal');
+      updateTableDetails();
+    }
+
+    function loadFromJson(){
+      const json = document.getElementById('loadJson').value;
+      try{
+        const data = JSON.parse(json);
+        venueDetails = data.venue || {};
+        initCanvas(data.width, data.height);
+
+        // tables
+        tables = [];
+        (data.tables || []).forEach(t => {
+          const group = new Konva.Group({ x:t.x, y:t.y, draggable:true, isTable:true, guests:t.guests || [], capacity:t.capacity });
+          let shape;
+          if (t.shape === 'rect'){
+            shape = new Konva.Rect({ width:t.width, height:t.height, fill:cinnamon, stroke:slate, strokeWidth:2 });
+          } else {
+            shape = new Konva.Circle({ radius:t.radius, fill:cinnamon, stroke:slate, strokeWidth:2 });
+          }
+          group.add(shape);
+
+          if ((t.guests || []).length > 0){
+            const icon = createPersonIcon();
+            const isRect = (t.shape === 'rect');
+            icon.position({ x:isRect ? t.width - 20 : t.radius - 10, y:isRect ? 10 : -t.radius + 10 });
+            group.add(icon);
+          }
+
+          layer.add(group);
+          tables.push(group);
+
+          group.on('dragmove', Konva.Util.throttle(()=>layer.batchDraw(), 50));
+          group.on('mouseover', (e)=>{
+            const gs = group.attrs.guests;
+            tooltip.getText().text(`Guests: ${gs.length}/${group.attrs.capacity}\n${gs.join('\n') || 'None'}`);
+            tooltip.position({ x:e.evt.layerX + 10, y:e.evt.layerY + 10 });
+            tooltip.show(); layer.batchDraw();
+          });
+          group.on('mouseleave', ()=>{ tooltip.hide(); layer.batchDraw(); });
+        });
+
+        // lines
+        lines = [];
+        (data.lines || []).forEach(l => {
+          const line = new Konva.Line({ points:l.points, stroke:slate, strokeWidth:2, draggable:true, isLine:true, x:l.x, y:l.y });
+          lineLayer.add(line);
+          lines.push(line);
+          line.on('dragmove', Konva.Util.throttle(()=>layer.batchDraw(), 50));
+        });
+
+        // texts
+        textLabels = [];
+        (data.texts || []).forEach(tx => {
+          const text = new Konva.Text({ text:tx.text, fontSize:16, fontFamily:tx.fontFamily, fill:textColor, x:tx.x, y:tx.y, draggable:true, isText:true });
+          layer.add(text);
+          textLabels.push(text);
+          text.on('dragmove', Konva.Util.throttle(()=>layer.batchDraw(), 50));
+        });
+
+        layer.draw(); lineLayer.draw();
+        closeModal('loadModal');
+        updateTableDetails();
+      } catch(err){
+        console.error(err);
+        alert('Invalid JSON');
+      }
+    }
+
+    // ===== Export to PDF =====
+    async function exportPDF(){
+      if (!planInitialized) return alert('Select a pre‑made plan first.');
+
+      const pdf = new jspdf.jsPDF();
+      pdf.setFontSize(20);
+      pdf.setTextColor(sienna);
+      pdf.text(`Seating Plan for ${venueDetails.name}`, 20, 20);
+
+      pdf.setFontSize(12);
+      pdf.setTextColor('#000');
+      pdf.text(`Location: ${venueDetails.location} | Capacity: ${venueDetails.capacity}`, 20, 30);
+
+      // Snapshot the visible canvas container
+      const canvas = await html2canvas(document.getElementById('container'));
+      const imgData = canvas.toDataURL('image/png');
+      pdf.addImage(imgData, 'PNG', 20, 40, 170, 100);
+
+      // Simple guest lists
+      let y = 150;
+      pdf.setFillColor(turquoise);
+      pdf.rect(20, y - 10, 170, 10, 'F');
+      pdf.setTextColor('#fff');
+      pdf.text('Table Guest Lists', 25, y - 2);
+      pdf.setTextColor('#000');
+
+      y += 10;
+      tables.forEach((g, i)=>{
+        const guests = g.attrs.guests.join(', ') || 'No guests';
+        pdf.text(`Table ${i+1} (${g.findOne('Rect') ? 'Rect' : 'Circle'}, Capacity: ${g.attrs.capacity}): ${guests}`, 20, y);
+        y += 10;
+        if (y > 270){ pdf.addPage(); y = 20; }
+      });
+
+      pdf.save('seating-plan.pdf');
+    }
+
+    // Close modals when clicking the backdrop
+    document.querySelectorAll('.modal').forEach(modal => {
+      modal.addEventListener('click', (e)=>{ if (e.target === modal) closeModal(modal.id); });
+    });
+
+    // Kick off
+    updateToolbarState();
+  </script>
+</body>
+</html>
