@@ -22,3 +22,7 @@ A self-contained and browser-only web app that runs locally from a single `iya_P
 6. Toggle B&W for user accessibility - included as an accessibility feature for colour blind users.
 
 **Example**: Add a table, assign guests, draw lines for rooms, centre view, export PDF.
+
+
+## Next Steps
+1. AWS hosted Beta to be released for testing in Q3 2026.
